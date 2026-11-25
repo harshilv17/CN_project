@@ -1,0 +1,121 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{graphicx,booktabs,xcolor,hyperref,listings,float,caption,enumitem,tabularx}
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black}
+\lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,frame=single,backgroundcolor=\color{black!4}}
+\newcommand{\fig}[3]{\begin{figure}[H]\centering\includegraphics[width=\linewidth]{figures/#1}\caption{#2}\label{#3}\end{figure}}
+
+\title{Private Network Service Platform\\[2pt]\large Resilient DNS, HTTPS Edge and Backend Failover on Three Macs}
+\author{Sushant (Mac 1) \and Harshil (Mac 2) \and Piyush (Mac 3)\\Computer Networks, Semester 5}
+\date{25 November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We built a small private network service on three MacBooks sharing a campus LAN: private DNS, two Python HTTP backends, and an nginx reverse proxy that terminates TLS and load-balances. Phase~1 established the platform. Phase~2 stressed it: a backup DNS server, a controlled DNS record change with a 30\,s TTL, firewall isolation of the backends, backend failover, and migration of the HTTPS edge to a standby machine. Extensions A--E were executed and are backed by terminal screenshots; Extension~F (troubleshooting) is a prepared runbook only. We also document the limitations we found in our own evidence.
+\end{abstract}
+
+\section{Introduction and goals}
+A network service is only as reliable as its weakest dependency. The request path here has four: name resolution, the TLS edge, the backends, and the network policy between them. For each we ask what happens when it fails and what the client observes.
+
+\section{Architecture}
+\begin{tabularx}{\linewidth}{llX}
+\toprule
+Machine & Owner & Services \\
+\midrule
+Mac 1, \texttt{10.7.27.143} & Sushant & primary \texttt{dnsmasq} (:53), Backend B (:3002), \texttt{pf} anchor for B\\
+Mac 2, \texttt{10.7.1.194} & Harshil & primary nginx HTTPS (:8443), test client\\
+Mac 3, \texttt{10.7.26.181} & Piyush & Backend A (:3001), backup \texttt{dnsmasq} (:53), standby nginx (:8443), \texttt{pf} anchor for A\\
+\bottomrule
+\end{tabularx}
+
+\medskip\noindent LAN \texttt{10.7.0.0/19}, gateway \texttt{10.7.0.1}, assigned by DHCP (so addresses differ from Phase~1). Names: \texttt{app.team1.test}, \texttt{api.team1.test}.
+
+\begin{lstlisting}
+client -> DNS (Mac1 primary / Mac3 backup) -> Mac2 nginx :8443 (TLS)
+       -> round-robin -> Backend A (Mac3 :3001) | Backend B (Mac1 :3002)
+Extension E: DNS may instead point to Mac3 standby nginx :8443
+\end{lstlisting}
+
+\section{Phase 1 summary}
+Phase~1 delivered private DNS via \texttt{dnsmasq}, two backends (\texttt{backend.py --backend A|B --port N}) returning \texttt{\{"backend": "A", "status": "ok"\}} with an \texttt{X-Backend} header, nginx round-robin, HTTPS with a locally trusted mkcert certificate (TLS~1.3 observed in Wireshark), and HTTP caching with \texttt{Cache-Control}, \texttt{ETag} and conditional \texttt{304 Not Modified} (headers in Figure~\ref{fig:cache}; the 304 capture is in \texttt{evidence/06-caching/}). Phase~1 evidence is in \texttt{evidence/}.
+
+\fig{mac3-piyush-140401.png}{\texttt{/cached} through the HTTPS edge returns \texttt{Cache-Control: max-age=60} and an \texttt{ETag}.}{fig:cache}
+
+\section{Phase 2 experiments}
+
+\subsection{Extension A: backup DNS}
+\textbf{Method.} Piyush installed a second \texttt{dnsmasq} on Mac~3 (listening on \texttt{127.0.0.1} and \texttt{10.7.26.181}) with identical records; Mac~2 and Mac~3 were given both resolvers. Sushant stopped \texttt{dnsmasq} on Mac~1.\\
+\textbf{Observation.} A query to Mac~1 timed out, Mac~3 answered \texttt{10.7.1.194}, and after a cache flush the system resolver was answered by \texttt{10.7.26.181} (Figure~\ref{fig:a}). Mac~1 was then restarted.\\
+\textbf{Conclusion.} A second resolver removes DNS as a single point of failure; it does not protect nginx or the backends. macOS resolver order is not a strict primary/secondary, so we also queried each server directly.
+
+\fig{mac2-harshil-141719.png}{Primary DNS unreachable (timeout); backup answers and serves the system lookup.}{fig:a}
+
+\subsection{Extension B: TTL and a controlled record change}
+\textbf{Method.} \texttt{local-ttl=30} was set on Mac~1 (earlier answers showed TTL~0). Mac~2 was pinned to the primary, and only \texttt{api.team1.test} was repointed from \texttt{10.7.1.194} to \texttt{10.7.26.181}. The client was observed, the macOS cache flushed, and the record restored.\\
+\textbf{Observation.} The server returned the new address, the client resolved it, and after rollback both servers returned \texttt{10.7.1.194} and HTTPS worked (Figure~\ref{fig:b}).\\
+\textbf{Caveat.} We did not capture a cached entry expiring at exactly 30\,s, so the screenshots show the change and rollback, not the cache timing itself.
+
+\fig{mac2-harshil-143001.png}{Resolution of the changed record, resolver restore and successful HTTPS afterwards.}{fig:b}
+
+\subsection{Extension C: backend isolation with \texttt{pf}}
+\textbf{Method.} Anchor \texttt{cn\_phase2} on Mac~1 and Mac~3 passes TCP to the backend port only from Mac~2 and drops all other sources on \texttt{en0}:
+\begin{lstlisting}
+pass  in quick on en0 inet proto tcp from 10.7.1.194 to 10.7.26.181 port 3001
+block in quick on en0 inet proto tcp from any        to 10.7.26.181 port 3001
+\end{lstlisting}
+\textbf{Observation.} Mac~1 reached Backend~A before the rule and got \texttt{curl: (28) \ldots Timeout was reached} after it (Figure~\ref{fig:c}); Mac~2 still reached A and B directly and through HTTPS. Rules were rolled back and access restored.\\
+\textbf{Conclusion.} A \texttt{block drop} yields a timeout, not a refusal. DNS and the edge were unaffected because only backend ports were filtered.
+
+\fig{mac1-sushant-144258.png}{Mac 1 to Backend A: 200 before the rule, timeout after, then rollback.}{fig:c}
+
+\subsection{Extension D: backend failover}
+\textbf{Method.} The upstream uses \texttt{max\_fails=1 fail\_timeout=5s} and \texttt{proxy\_next\_upstream error timeout http\_502 http\_503 http\_504}. Backend~A was stopped, ten HTTPS requests issued, A restarted, and ten more issued.\\
+\textbf{Observation.} With A down every request returned \texttt{200 OK} from B with no client-visible errors; after restart the responses returned to a mixture of A and B (Figure~\ref{fig:d}).\\
+\textbf{Conclusion.} This is \emph{passive} failover: a failed attempt marks the server down and nginx retries another; there are no background health probes. The single nginx edge remains a single point of failure, which motivates Extension~E.
+
+\fig{mac2-harshil-144654.png}{Ten requests with A down (all B, 200), then A restored and balancing resumes.}{fig:d}
+
+\subsection{Extension E: standby edge and DNS migration}
+\textbf{Method.} Piyush ran a second nginx on Mac~3 under a private prefix with the same certificate (transferred by AirDrop after \texttt{scp} failed). Harshil first tested it with \texttt{curl --resolve app.team1.test:8443:10.7.26.181}. Sushant then repointed the records to \texttt{10.7.26.181}, Mac~2 was pinned to Mac~1's DNS, and \texttt{https://app.team1.test:8443} was requested without \texttt{-k} or \texttt{--resolve}.\\
+\textbf{Observation.} The name resolved to \texttt{10.7.26.181}, HTTPS succeeded and alternated A/B (Figure~\ref{fig:e1}), and Mac~3's access log recorded the requests from \texttt{10.7.1.194} (Figure~\ref{fig:e2}), confirming the standby served the traffic.\\
+\textbf{Conclusion.} A certificate authenticates the hostname, not the IP, so it validates on the standby once DNS points there. The cutover is manual and subject to resolver caches; it is controlled migration, not automatic zero-downtime failover.
+
+\fig{mac2-harshil-152219.png}{After cutover: the name resolves to Mac 3 and HTTPS alternates between A and B.}{fig:e1}
+\fig{mac3-piyush-152239.png}{Standby access log showing client requests (see Section~\ref{sec:lim} for the dnsmasq error visible here).}{fig:e2}
+
+\subsection{Extension F: troubleshooting}
+Not executed. We prepared a layered runbook (DNS, client resolver, TCP, TLS, nginx, backend) with a command and a failure meaning for each layer; see \texttt{phase2/docs/troubleshooting-runbook.md}.
+
+\section{Results}
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+Extension & Outcome\\
+\midrule
+A Backup DNS & Resolution continued with primary stopped\\
+B TTL change & Record change, flush and rollback demonstrated\\
+C Isolation & Mac 1 blocked from Backend A; Mac 2 allowed; rolled back\\
+D Failover & Zero client errors with A down; balancing resumed\\
+E Standby edge & Standby served client traffic after DNS cutover\\
+F Troubleshooting & Runbook prepared; not exercised\\
+\bottomrule
+\end{tabularx}
+
+\section{Limitations and follow-ups}\label{sec:lim}
+\begin{itemize}[nosep]
+\item \texttt{pf} was enabled with \texttt{pfctl -E} on Mac~1 and Mac~3, but the rollback ran \texttt{pfctl -X} with a placeholder instead of the real token, which pfctl rejected; the enable reference should be released.
+\item During Extension~E, Mac~3's \texttt{dnsmasq} reported \texttt{bad option at line 518} and its DNS timed out; the cutover worked only because Mac~2 used Mac~1's DNS. The backup DNS was therefore not shown updated.
+\item The restore step of Extension~E (DNS back to the original address, primary nginx restart) is not captured in our screenshots.
+\item Isolation of Backend~B from Mac~3 is not captured; only the rule listing and Mac~2's allowed access are.
+\item The baseline ping from Mac~3 to Mac~1 showed 25\% loss (3 of 4 packets).
+\item DNS is cached by clients; our evidence shows the change, not exact 30\,s expiry.
+\end{itemize}
+
+\section{Roles}
+Sushant: primary DNS, Backend~B, DNS record changes, \texttt{pf} on Mac~1. Harshil: nginx edge, client tests and failover loops. Piyush: Backend~A, backup DNS, \texttt{pf} on Mac~3, standby nginx.
+
+\section{Conclusion}
+The platform tolerates loss of a DNS server and of a backend, restricts backend access to the edge, and can move its HTTPS edge by changing DNS. Remaining single points of failure are the manual nature of edge migration and the dependence on client caches. All evidence, configurations and commands are in the repository (\texttt{phase2/}).
+
+\end{document}
