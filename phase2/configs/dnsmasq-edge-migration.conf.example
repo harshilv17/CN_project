@@ -1,0 +1,5 @@
+# Extension E cutover: point both names at the standby edge (Mac 3).
+# Applied on Mac 1 (primary). Mac 3 (backup) needs the same change - see README "Known gaps".
+local-ttl=30
+address=/app.team1.test/10.7.26.181
+address=/api.team1.test/10.7.26.181

@@ -1,0 +1,4 @@
+# Extension B: only api.team1.test is repointed (Mac 1). app.team1.test stays on Mac 2.
+address=/app.team1.test/10.7.1.194
+address=/api.team1.test/10.7.26.181
+local-ttl=30

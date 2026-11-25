@@ -1,0 +1,6 @@
+# Mac 3 (10.7.26.181) - backup private DNS. Same records as primary.
+listen-address=127.0.0.1,10.7.26.181
+bind-interfaces
+address=/app.team1.test/10.7.1.194
+address=/api.team1.test/10.7.1.194
+local-ttl=30

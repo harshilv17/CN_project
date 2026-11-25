@@ -1,0 +1,4 @@
+# /etc/pf.anchors/cn_phase2 on Mac 1 - only Mac 2 (nginx edge) may reach Backend B.
+# Observed via `pfctl -a cn_phase2 -sr` (en0 = Wi-Fi on this Mac).
+pass in quick on en0 inet proto tcp from 10.7.1.194 to 10.7.27.143 port 3002
+block in quick on en0 inet proto tcp from any to 10.7.27.143 port 3002
