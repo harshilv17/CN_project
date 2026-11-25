@@ -57,7 +57,18 @@ Phase 2 uses the names `app.team1.test` / `api.team1.test` and different DHCP ad
 
 ## Phase 1 summary
 
-#
+### Evidence map
+
+| Folder | What it shows |
+|---|---|
+| [`01-lan`](evidence/01-lan/) | Mac 1 `en0`/`10.7.7.11`, successful ping to `10.7.7.12`; Mac 3 ping replies to the edge name |
+| [`02-dns`](evidence/02-dns/) | Client resolver set to `10.7.7.11`; dnsmasq listening on LAN and loopback; client `dig` answers `10.7.7.12` from `10.7.7.11` |
+| [`03-backends`](evidence/03-backends/) | Backend A on `3001`, backend B on `3002` |
+| [`04-nginx-load-balancing`](evidence/04-nginx-load-balancing/) | Browser responses A, B, A; upstream config; `nginx -t` success. The early localhost test returned B six times and does not meet the HTTPS six-response requirement |
+| [`05-https-tls`](evidence/05-https-tls/) | HTTPS 200; certificate trust failure then success after installing the local CA; mkcert certificate; nginx on `8443` |
+| [`06-caching`](evidence/06-caching/) | `/cached` with `Cache-Control`, `ETag`, `304 Not Modified` (HTTP conditional caching, not an nginx cache hit) |
+| [`07-wireshark`](evidence/07-wireshark/) | DNS query/response `10.7.7.22` ↔ `10.7.7.11`; TCP/TLS 1.3 to `10.7.7.12:8443` |
+| [`08-failures`](evidence/08-failures/) | One blank screenshot, unusable; the certificate failure is in `05-https-tls` |
 
 Open items from Phase 1: live `dnsmasq.conf` capture, `dig @8.8.8.8` output, and the original topology/pcap artifacts are not in the repo.
 
