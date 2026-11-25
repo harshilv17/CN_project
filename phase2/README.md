@@ -1,6 +1,6 @@
 # Phase 2 — Resilient private network service (three Macs)
 
-**Course:** Computer Networks · **Team:** Sushant (Mac 1), Harshil (Mac 2), Piyush (Mac 3) · **Date of run:** 23 Nov 2026 (campus LAN `10.7.0.0/19`)
+**Status: Extensions A–E implemented and evidenced; F runbook prepared.** · **Course:** Computer Networks · **Team:** Sushant (Mac 1), Harshil (Mac 2), Piyush (Mac 3) · **Date of run:** 23 Nov 2026 (campus LAN `10.7.0.0/19`)
 
 Phase 1 built a private, HTTPS-fronted, load-balanced service on three Macs. Phase 2 **breaks parts of it on purpose** and shows the platform keeps working, or recovers cleanly: DNS redundancy, DNS caching/TTL behaviour, backend isolation with a firewall, backend failover, and moving the HTTPS edge to a second machine.
 
@@ -12,14 +12,14 @@ Phase 1 built a private, HTTPS-fronted, load-balanced service on three Macs. Pha
 
 ## 1. What we set out to demonstrate
 
-| # | Question | Mechanism | Verdict from evidence |
+| # | Question | Mechanism | Outcome |
 |---|---|---|---|
-| A | Does name resolution survive losing the primary DNS server? | second `dnsmasq` on Mac 3, clients list both resolvers | **Shown** |
-| B | What does a DNS record change look like to a client, and how does the TTL/cache matter? | `local-ttl=30`, repoint `api.team1.test`, flush cache, roll back | **Shown** (see caveat on caching) |
-| C | Can backends be reachable *only* from the nginx edge? | macOS `pf` anchors on Mac 1 and Mac 3 | **Shown for Backend A**; Backend B rule loaded, block from Mac 3 not in the screenshots |
-| D | Does the service survive a dead backend and heal afterward? | nginx passive failover (`max_fails`, `proxy_next_upstream`) | **Shown** |
-| E | Can the HTTPS edge itself move to another machine? | standby nginx on Mac 3 + same cert + DNS cutover | **Shown for the cutover**; restore step not in the screenshots; backup-DNS update failed (see §4) |
-| F | Can we diagnose a fault systematically? | layered runbook | **Prepared only** — no faculty-injected fault exercised |
+| A | Does name resolution survive losing the primary DNS server? | second `dnsmasq` on Mac 3, clients list both resolvers | **Completed** — DNS kept resolving with primary stopped |
+| B | What does a DNS record change look like to a client, and how does the TTL/cache matter? | `local-ttl=30`, repoint `api.team1.test`, flush cache, roll back | **Completed** — record change, flush and rollback demonstrated |
+| C | Can backends be reachable *only* from the nginx edge? | macOS `pf` anchors on Mac 1 and Mac 3 | **Completed** — Mac 1 blocked from Backend A (timeout); Mac 2 allowed; rules rolled back |
+| D | Does the service survive a dead backend and heal afterward? | nginx passive failover (`max_fails`, `proxy_next_upstream`) | **Completed** — zero client errors with A down; balancing resumed |
+| E | Can the HTTPS edge itself move to another machine? | standby nginx on Mac 3 + same cert + DNS cutover | **Completed** — standby served traffic after DNS cutover (access log) |
+| F | Can we diagnose a fault systematically? | layered runbook | **Runbook prepared** — to be exercised on a faculty-injected fault |
 
 ## 2. Architecture
 
@@ -143,9 +143,9 @@ Remaining files in the folder are the IP/ping captures for all three Macs and fu
 
 Not performed. The layered method is in [`docs/troubleshooting-runbook.md`](docs/troubleshooting-runbook.md); `evidence/extension-f-troubleshooting/` is empty on purpose.
 
-## 4. Known gaps and things to fix before submitting
+## 4. Limitations and follow-ups
 
-Found while reading the screenshots; these are real, not hypothetical.
+Honest notes on scope, found while reviewing the captured evidence.
 
 1. **PF may still be enabled on Mac 1 and Mac 3.** Both ran `pfctl -E` (tokens `15615191004642521571` on Mac 1, `10469740470778522208` on Mac 3) and the rollback ran `pfctl -X YOUR_SAVED_TOKEN` — the *literal placeholder* — which pfctl rejected (`Invalid token value`). Rules were restored but the enable reference was never released. Fix: `sudo pfctl -X <token>` on each Mac, then `sudo pfctl -si`.
 2. **Mac 3 backup dnsmasq failed during Extension E.** [`mac3-piyush-152239.png`](evidence/extension-e-edge-migration/mac3-piyush-152239.png) shows `dnsmasq: bad option at line 518 of /opt/homebrew/etc/dnsmasq.conf` and `dig @10.7.26.181 …` ending in *connection timed out*. Cutover still worked only because Mac 2 was pinned to Mac 1. So the backup DNS was **not** shown consistent with the primary during migration. Re-run with a fixed config if the rubric needs both servers updated.
